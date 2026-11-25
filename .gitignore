@@ -1,0 +1,10 @@
+data/raw/*
+!data/raw/.gitkeep
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+data/*.csv
+reports/
+PROJECT_LOG.md
+docs/CONCEPTS.md

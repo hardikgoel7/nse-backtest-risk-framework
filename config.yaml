@@ -1,0 +1,94 @@
+# All tunable assumptions live here. Nothing is hard-coded in src/.
+
+data:
+  universe_file: data/nifty50_constituents.csv   # download from niftyindices.com, column "Symbol"
+  suffix: ".NS"
+  index_ticker: "^NSEI"          # Nifty 50 PRICE index (excludes dividends)
+  benchmark_tr_proxy: "NIFTYBEES.NS"  # Nifty 50 ETF; adjusted close ~ total return proxy
+  start: "2010-01-01"
+  dev_end: "2023-12-31"          # everything after this is LOCKED out-of-sample holdout
+  raw_dir: data/raw
+
+holdout:
+  # Loader refuses data after dev_end unless allow_holdout=True.
+  # Rule: allow_holdout=True is used exactly once, for the final report.
+  locked: true
+
+costs:                            # equity DELIVERY, NSE. Sources in PROJECT_LOG.md
+  brokerage_pct: 0.0              # Zerodha: zero on delivery
+  stt_buy: 0.001                  # 0.1%
+  stt_sell: 0.001                 # 0.1%
+  stamp_buy: 0.00015              # 0.015% buy side
+  exch_txn: 0.0000306990          # Rs 306.99 per crore, each side (NSE, from 1 Mar 2026)
+  sebi: 0.000001                  # Rs 10 per crore
+  gst: 0.18                       # on brokerage + SEBI + exchange charges
+  dp_per_sell_scrip: 15.34        # Rs, flat per scrip sold (Zerodha, GST included)
+  slippage_bps: 5.0               # ASSUMPTION, not sourced. Sensitivity-tested in Week 3.
+
+strategy:                          # FROZEN before any result was seen. Do not tune.
+  rsi_period: 14
+  trend_min: 60                    # monthly and weekly RSI must be above this
+  support_lo: 38                   # daily RSI lower bound (A); monthly lower bound (B)
+  support_hi: 42                   # daily RSI upper bound (A); monthly upper bound (B)
+  cluster_gap_days: 20             # signal days within 20 trading days = same episode
+  horizons: [5, 10, 20, 40, 60]    # all reported. 5/10/40 added AFTER seeing 20/60 results: exploratory
+  primary_horizons: [20, 60]       # pre-declared main results
+  bootstrap_draws: 10000
+
+trade:                             # YOUR exit rules, pre-declared 2026-11-21 before any run
+  target_pct: 0.30                 # exit when price reaches entry x 1.30
+  max_hold_days: 120               # time cap (added assumption; without a cap, 'eventually' always wins)
+  stop: "low of the candle where RSI was in the 38-42 band"   # A2: day T-1, A: day T
+  entry: "close of day T+1 (+ slippage)"
+  notional_rupees: 100000          # position size used to price fixed fees (DP charge)
+  min_adv_rupees: 50000000          # liquidity floor (Rs 5 crore, 20-day avg traded value) applied to ALL strategies/controls. ASSUMPTION, declared 2026-11-22 before broad-universe run
+  baseline_samples_per_stock: 400  # random-day placebo entries per stock
+  adverse_same_day: "stop first"   # if low<=stop and high>=target same day, assume stop hit first
+
+metrics:
+  risk_free_annual: 0.065         # 6.5% p.a. ASSUMPTION: representative mid-point of India's 91-day T-bill
+                                  # implicit auction yields over the test period. RBI auction data: ~8.3-8.6% (2014-15),
+                                  # ~7.1-7.5% (2015-16), ~6.43-6.76% (2024), ~5.4-5.9% (2025).
+                                  # Source: RBI Handbook of Statistics on Indian Economy, Table 217/221 (Auctions of
+                                  # 91-Day GoI Treasury Bills) and RBI Treasury Bill auction press releases.
+                                  # Sharpe/Sortino are reported with a +/-1% sensitivity because this is a single constant,
+                                  # not a daily series.
+  periods_per_year: 252
+
+strategies:                        # PRE-DECLARED 2026-11-22 13:10, REVISED 13:25 (entry rule clarified) - before any real run.
+  # ENTRY rule: the signal candle's HIGH = buy-stop trigger, its LOW = stop. risk = fill - stop. target = fill + 3 x risk.
+  # Order is live for `entry_window` trading days starting the day after the signal is known. Slippage added to the fill.
+  # Setup is INVALIDATED if the stop is touched before a fill (or same day as an intraday trigger).
+  common: {target_r: 3.0, adverse_same_day: "stop first"}
+  S1: {name: "RSI trend + daily bounce at 40", trend_min: 60, band: [38, 42], signal_candle: "day T-1 (the in-band candle)", entry_window: 5,  max_hold_days: 15}
+  S2: {name: "RSI trend + daily bounce at 60", trend_min: 60, band: [58, 62], signal_candle: "day T-1 (the in-band candle)", entry_window: 5,  max_hold_days: 15}
+  S3: {name: "Value buy: monthly RSI 38-42",    band: [38, 42], signal_candle: "the completed MONTH whose RSI was in band", entry_window: 21, max_hold_days: 63}   # ~1 month to trigger, ~3 months to hold
+  # entry_window and max_hold_days = default assumptions from the rule's stated horizon ("around 15 days" / "1-3 months"); NOT tuned.
+  # S4 is a breakout PROXY for a visually judged cup-and-handle; tested in scripts/run_topdown.py.
+  S4: {name: "Cup-and-handle PROXY: monthly close >= 1.02 x highest monthly close of prior 60 months",
+       breakout_pct: 0.02, lookback_months: 60, signal_candle: "the breakout MONTH", entry_window: 21, max_hold_days: 63}
+  # S4 is a PROXY for the visual pattern, not the pattern itself: no cup shape, no handle, no volume test.
+  # Same monthly structure as S3 so the two are directly comparable. Declared, not tuned.
+  bonferroni_comparisons: 5          # S1 vs RANDOM/BOUNCE, S2 vs RANDOM/BOUNCE, S3 vs RANDOM
+
+portfolio:                         # Event-driven engine settings. PRE-DECLARED 2026-11-22 14:35. Engine DEMONSTRATION: no edge is claimed.
+  strategy: S1                     # which signal to trade (S1 / S2 / S3)
+  start_capital: 1000000           # Rs 10 lakh
+  risk_per_trade: 0.01             # 1% of current equity risked per position (entry - stop)
+  max_positions: 10                # concurrent open positions
+  max_position_pct: 0.20           # a single position may not exceed 20% of equity
+  one_position_per_ticker: true
+  cash_earns_rf: true              # idle cash accrues metrics.risk_free_annual daily. Realistic (a liquid fund pays
+                                   # roughly the T-bill rate) and necessary here: the rule is out of the market most
+                                   # of the time, so a 0% cash assumption would understate the portfolio by construction.
+                                   # Run with --no-cash-interest to see the 0% version.
+
+topdown:                           # Sector layer. PRE-DECLARED 2026-11-22 16:15, before any run.
+  rule: "trade a signal only when its SECTOR index has daily AND weekly AND monthly RSI above sector_min"
+  sector_min: 60
+  index: "equal-weighted index built from the universe's own members in that sector"
+  # Why constructed and not the official Nifty sector index: it needs no extra download, covers every
+  # sector in the universe, and avoids a crude map from Yahoo sector labels to NSE index names.
+  # Cost: equal weight, not free-float cap weight, so RSI levels differ somewhat from the official index.
+  min_members: 5                   # a sector with fewer members is dropped
+  bonferroni_comparisons: 8        # 4 strategies x (sector ON, sector OFF)
